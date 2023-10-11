@@ -3,7 +3,6 @@ import os
 import torch
 from scipy.spatial import cKDTree
 from pytorch3d.ops.knn import knn_points
-import warnings
 
 
 __all__ = [
@@ -77,7 +76,8 @@ def clouds_alignment_demo():
     from numpy.lib.recfunctions import structured_to_unstructured
 
     id1, id2 = '1669300804_715071232', '1669300806_15306496'
-    path = os.path.dirname(__file__)
+    path = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+    path = os.path.normpath(path)
     # load cloud poses
     poses = read_poses(os.path.join(path, 'poses.csv'))
     pose1 = poses[id1]

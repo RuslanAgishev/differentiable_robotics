@@ -5,7 +5,7 @@ import torch
 from utils.transform import xyz_axis_angle_to_matrix, matrix_to_xyz_axis_angle
 
 
-def path_smoothnes(xyza, dt=1.):
+def path_smoothness(xyza, dt=1.):
     assert isinstance(xyza, torch.Tensor)
     assert xyza.ndim == 2 or (xyza.ndim == 3 and xyza.shape[1:] == (4, 4))  # (N, 6) or (N, 4, 4)
     if xyza.ndim == 3 and xyza.shape[1:] == (4, 4):
@@ -75,7 +75,7 @@ def demo():
 
     for i in range(n_iters):
         optimizer.zero_grad()
-        loss = path_smoothnes(xyza)
+        loss = path_smoothness(xyza)
         loss.backward()
         optimizer.step()
         print('iter {}, loss: {:.4f}'.format(i, loss.item()))
