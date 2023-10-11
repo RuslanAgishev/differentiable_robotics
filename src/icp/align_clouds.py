@@ -1,6 +1,5 @@
 from __future__ import absolute_import, division, print_function
 import os
-import numpy as np
 import torch
 from scipy.spatial import cKDTree
 from pytorch3d.ops.knn import knn_points
@@ -9,93 +8,7 @@ import warnings
 
 __all__ = [
     'point_to_point_dist',
-    'point_to_plane_dist'
 ]
-
-
-def point_to_plane_dist(clouds: list, icp_inlier_ratio=0.9, masks=None, differentiable=True, verbose=False, **kwargs):
-    """ICP-like point to plane distance.
-
-    Computes point to plane distances for consecutive pairs of point cloud scans, and returns the average value.
-
-    :param clouds: List of clouds. Individual scans from a data sequences.
-    :param masks: List of tuples masks[i] = (mask1, mask2) where mask1 defines indices of points from 1st point cloud
-                  in a pair that intersect (close enough) with points from 2nd cloud in the pair,
-                  mask2 is list of indices of intersection points from the 2nd point cloud in a pair.
-    :param icp_inlier_ratio: Ratio of inlier points between a two pairs of neighboring clouds.
-    :param differentiable: Whether to use differentiable method of finding neighboring points (from Pytorch3d: slow on CPU)
-                           or from scipy (faster but not differentiable).
-    :param verbose:
-    :return:
-    """
-    assert 0.0 <= icp_inlier_ratio <= 1.0
-    if masks is not None:
-        assert len(clouds) == len(masks) + 1
-        # print('Using precomputed intersection masks for point to plane loss')
-    point2plane_dist = 0.0
-    n_pairs = len(clouds) - 1
-    for i in range(n_pairs):
-        cloud1 = clouds[i]
-        assert cloud1.normals is not None, "Cloud must have normals computed to estimate point to plane distance"
-        cloud2 = clouds[i + 1]
-
-        points1 = cloud1.to_points() if cloud1.points is None else cloud1.points
-        points2 = cloud2.to_points() if cloud2.points is None else cloud2.points
-        assert not torch.all(torch.isnan(points1))
-        assert not torch.all(torch.isnan(points2))
-        points1 = torch.as_tensor(points1, dtype=torch.float)
-        points2 = torch.as_tensor(points2, dtype=torch.float)
-
-        # find intersections between neighboring point clouds (1 and 2)
-        if masks is None:
-            if not differentiable:
-                tree = cKDTree(points2)
-                dists, ids = tree.query(points1, k=1)
-            else:
-                dists, ids, _ = knn_points(points1[None], points2[None], K=1)
-                dists = torch.sqrt(dists).squeeze()
-                ids = ids.squeeze()
-            dists = torch.as_tensor(dists)
-            dist_th = torch.nanquantile(dists, icp_inlier_ratio)
-            mask1 = dists <= dist_th
-            mask2 = ids[mask1]
-            inl_err = dists[mask1].mean()
-        else:
-            mask1, mask2 = masks[i]
-            inl_err = torch.tensor(-1.0)
-
-        points1_inters = points1[mask1]
-        assert len(points1_inters) > 0, "Point clouds do not intersect. Try to sample lidar scans more frequently"
-        points2_inters = points2[mask2]
-
-        # point to plane distance 1 -> 2
-        normals1_inters = cloud1.normals[mask1]
-        # assert np.allclose(np.linalg.norm(normals1_inters, axis=1), np.ones(len(normals1_inters)))
-        k = torch.multiply(normals1_inters, points2_inters - points1_inters).sum(dim=-1, keepdims=True)
-        points2_plane = points2_inters - k * normals1_inters
-        dists_to_plane = torch.linalg.norm(points2_inters - points2_plane, dim=-1)
-        dist12 = dists_to_plane.mean()
-
-        # point to plane distance 2 -> 1
-        normals2_inters = cloud2.normals[mask2]
-        # assert np.allclose(np.linalg.norm(normals2_inters, axis=1), np.ones(len(normals2_inters)))
-        k = torch.multiply(normals2_inters, points1_inters - points2_inters).sum(dim=-1, keepdims=True)
-        points1_plane = points1_inters - k * normals2_inters
-        dists_to_plane = torch.linalg.norm(points1_inters - points1_plane, dim=-1)
-        dist21 = dists_to_plane.mean()
-
-        point2plane_dist += 0.5 * (dist12 + dist21)
-
-        if inl_err > 0.3:
-            warnings.warn('ICP inliers error is too big: %.3f (> 0.3) [m] for pairs (%i, %i)' % (inl_err, i, i + 1))
-
-        if verbose:
-            print('Mean point to plane distance: %.3f [m] for scans: (%i, %i), inliers error: %.6f' %
-                  (point2plane_dist.item(), i, i+1, inl_err.item()))
-
-    point2plane_dist = torch.as_tensor(point2plane_dist / n_pairs)
-
-    return point2plane_dist
 
 
 def point_to_point_dist(clouds: list, icp_inlier_ratio=0.9, differentiable=True, verbose=False):
@@ -164,14 +77,15 @@ def clouds_alignment_demo():
     from numpy.lib.recfunctions import structured_to_unstructured
 
     id1, id2 = '1669300804_715071232', '1669300806_15306496'
+    path = os.path.dirname(__file__)
     # load cloud poses
-    poses = read_poses(os.path.join('poses.csv'))
+    poses = read_poses(os.path.join(path, 'poses.csv'))
     pose1 = poses[id1]
     pose2 = poses[id2]
 
     # load point clouds
-    cloud1 = read_cloud('%s.npz' % id1)
-    cloud2 = read_cloud('%s.npz' % id2)
+    cloud1 = read_cloud(os.path.join(path, '%s.npz' % id1))
+    cloud2 = read_cloud(os.path.join(path, '%s.npz' % id2))
     cloud1 = structured_to_unstructured(cloud1[['x', 'y', 'z']])
     cloud2 = structured_to_unstructured(cloud2[['x', 'y', 'z']])
 
