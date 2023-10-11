@@ -27,3 +27,12 @@ def matrix_to_xyz_axis_angle(T):
     poses = torch.concat([xyz, axis_angle], dim=1)
     assert poses.shape == (n_poses, 6)
     return poses
+
+
+def transform_cloud(cloud, pose):
+    assert cloud.ndim == 2
+    assert cloud.shape[-1] == 3
+    assert pose.shape == (4, 4)
+
+    cloud = cloud @ pose[:3, :3].T + pose[:3, 3]
+    return cloud
