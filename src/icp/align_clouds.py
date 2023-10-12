@@ -1,6 +1,7 @@
 from __future__ import absolute_import, division, print_function
 import os
 import torch
+import numpy as np
 from scipy.spatial import cKDTree
 from pytorch3d.ops.knn import knn_points
 
@@ -22,7 +23,7 @@ def point_to_point_dist(clouds: list, icp_inlier_ratio=0.9, differentiable=True,
     """
     assert 0.0 <= icp_inlier_ratio <= 1.0
 
-    point2point_dist = 0.0
+    point2point_dist = torch.tensor(0.0, dtype=clouds[0].dtype, device=clouds[0].device)
     n_pairs = len(clouds) - 1
     for i in range(n_pairs):
         points1 = clouds[i]
@@ -54,7 +55,7 @@ def point_to_point_dist(clouds: list, icp_inlier_ratio=0.9, differentiable=True,
 
         # point to point distance
         vectors = points2_inters - points1_inters
-        point2point_dist = torch.linalg.norm(vectors, dim=1).mean()
+        point2point_dist += torch.linalg.norm(vectors, dim=1).mean()
 
         if inl_err > 0.3:
             print('ICP inliers error is too big: %.3f (> 0.3) [m] for pairs (%i, %i)' % (inl_err, i, i + 1))
@@ -63,11 +64,11 @@ def point_to_point_dist(clouds: list, icp_inlier_ratio=0.9, differentiable=True,
             print('Mean point to point distance: %.3f [m] for scans: (%i, %i), inliers error: %.6f' %
                   (point2point_dist.item(), i, i+1, inl_err.item()))
 
-    # point2point_dist = torch.as_tensor(point2point_dist / n_pairs)
+    point2point_dist = torch.as_tensor(point2point_dist / n_pairs)
     return point2point_dist
 
 
-def clouds_alignment_demo():
+def clouds_alignment_demo(n_iters=400, pose_noise_level=1.0, grid_res=0.1, lr=0.01):
     from utils.preproc import filter_grid, filter_depth
     from utils.transform import matrix_to_xyz_axis_angle, xyz_axis_angle_to_matrix, transform_cloud
     from utils.io import read_cloud, read_poses
@@ -90,8 +91,8 @@ def clouds_alignment_demo():
     cloud2 = structured_to_unstructured(cloud2[['x', 'y', 'z']])
 
     # apply grid filtering to point clouds
-    cloud1 = filter_grid(cloud1, grid_res=0.1)
-    cloud2 = filter_grid(cloud2, grid_res=0.1)
+    cloud1 = filter_grid(cloud1, grid_res=grid_res)
+    cloud2 = filter_grid(cloud2, grid_res=grid_res)
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -100,10 +101,11 @@ def clouds_alignment_demo():
     pose1 = torch.tensor(pose1, dtype=torch.float32, device=device)
     pose2 = torch.tensor(pose2, dtype=torch.float32, device=device)
 
-    xyza1_delta = torch.tensor([0.5, 0.3, 0.2, 0.01, 0.01, -0.02], dtype=pose1.dtype, device=device)
+    # xyza1_delta = torch.tensor([0.5, -0.3, 0.2, -0.1, 0.1, -0.2], dtype=pose1.dtype, device=device)
+    xyza1_delta = torch.as_tensor(np.random.random(6) * pose_noise_level, dtype=pose1.dtype, device=device)
     xyza1_delta.requires_grad = True
 
-    optimizer = torch.optim.Adam([{'params': xyza1_delta, 'lr': 0.01}])
+    optimizer = torch.optim.Adam([{'params': xyza1_delta, 'lr': lr}])
 
     cloud2 = transform_cloud(cloud2, pose2)
 
@@ -116,7 +118,6 @@ def clouds_alignment_demo():
     iters = []
     xyza_deltas = []
     # run optimization loop
-    n_iters = 200
     for it in range(n_iters):
         # add noise to poses
         pose_deltas_mat = xyz_axis_angle_to_matrix(xyza1_delta[None]).squeeze()
@@ -164,7 +165,7 @@ def clouds_alignment_demo():
             plt.pause(0.01)
             plt.draw()
 
-            if it % 50 == 0 or it == n_iters - 1:
+            if it % 100 == 0 or it == n_iters - 1:
                 print('Distance between clouds: %f', (torch.linalg.norm(pose1[:3, 3] - pose2[:3, 3])))
                 print('Changed pose of the first cloud by: %s [m]' % torch.linalg.norm(xyza1_delta[:3]))
 
