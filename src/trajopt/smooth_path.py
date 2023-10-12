@@ -44,19 +44,18 @@ def path_smoothness(xyza, dt=1.):
     return cost
 
 
-def get_traj(N=10):
+def get_traj(n_wps=10, noise_level=0.1):
     # define trajectory as tensor of shape (N, 6)
     # where N is the number of poses
     # and each pose is a 6D vector (x, y, z, ax, ay, az)
 
-    poses = torch.tensor([np.eye(4) for _ in range(N)])
-    poses[:, 0, 3] = torch.linspace(0, 1, N)
-    noise = 0.1
-    poses[:, 1, 3] = torch.sin(torch.linspace(0, 1, N) * np.pi) + torch.randn(N) * noise
-    poses[:, 2, 3] = torch.cos(torch.linspace(0, 1, N) * np.pi) + torch.randn(N) * noise
+    poses = torch.tensor([np.eye(4) for _ in range(n_wps)])
+    poses[:, 0, 3] = torch.linspace(0, 1, n_wps)
+    poses[:, 1, 3] = torch.sin(torch.linspace(0, 1, n_wps) * np.pi) + torch.randn(n_wps) * noise_level
+    poses[:, 2, 3] = torch.cos(torch.linspace(0, 1, n_wps) * np.pi) + torch.randn(n_wps) * noise_level
     xyza = matrix_to_xyz_axis_angle(poses)
 
-    assert xyza.shape == (N, 6)
+    assert xyza.shape == (n_wps, 6)
     return xyza
 
 
@@ -64,7 +63,7 @@ def demo():
     from mayavi import mlab
     from utils.vis import draw_coord_frames
 
-    xyza = get_traj(N=10)
+    xyza = get_traj(n_wps=10, noise_level=0.2)
     xyza.requires_grad_(True)
 
     fig = mlab.figure(bgcolor=(1, 1, 1), size=(1000, 1000))
