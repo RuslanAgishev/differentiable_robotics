@@ -22,3 +22,9 @@ python -m trajopt.smooth_path
 ```commandline
 python -m icp.align_clouds
 ```
+
+## Bounding box Pose Optimization
+
+The optimization is based on a point cloud coverage function by the bounding box.
+
+<img src="./docs/trajopt/bbox_pose_opt.gif" width="400">
