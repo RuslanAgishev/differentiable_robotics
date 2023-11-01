@@ -5,7 +5,7 @@ Collection of differentiable methods for robotics applications implemented with
 
 Please, run the examples from the `src` directory of the repository.
 
-## Path Smoothing
+## Path smoothing
 
 <img src="./docs/trajopt/path_smooth.gif" width="400">
 
@@ -23,7 +23,7 @@ python -m trajopt.smooth_path
 python -m icp.align_clouds
 ```
 
-## Bounding box Pose Optimization
+## Fit a bounding box to a point cloud
 
 The optimization is based on a point cloud coverage function by the bounding box.
 

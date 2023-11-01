@@ -109,14 +109,19 @@ def clouds_alignment_demo(n_iters=400, pose_noise_level=1.0, grid_res=0.1, lr=0.
 
     cloud2 = transform_cloud(cloud2, pose2)
 
-    pcd2 = o3d.geometry.PointCloud()
-    pcd2.points = o3d.utility.Vector3dVector(cloud2.detach().cpu())
-    pcd2.paint_uniform_color([0, 0, 1])
-
     plt.figure(figsize=(20, 5))
     losses = []
     iters = []
     xyza_deltas = []
+
+    # open3d visualization
+    vis = o3d.visualization.Visualizer()
+    vis.create_window()
+    pcd1 = o3d.geometry.PointCloud()
+    pcd2 = o3d.geometry.PointCloud()
+    pcd2.points = o3d.utility.Vector3dVector(cloud2.detach().cpu())
+    pcd2.paint_uniform_color([0, 0, 1])
+
     # run optimization loop
     for it in range(n_iters):
         # add noise to poses
@@ -165,14 +170,19 @@ def clouds_alignment_demo(n_iters=400, pose_noise_level=1.0, grid_res=0.1, lr=0.
             plt.pause(0.01)
             plt.draw()
 
-            if it % 100 == 0 or it == n_iters - 1:
-                print('Distance between clouds: %f', (torch.linalg.norm(pose1[:3, 3] - pose2[:3, 3])))
-                print('Changed pose of the first cloud by: %s [m]' % torch.linalg.norm(xyza1_delta[:3]))
+            # visualize in open3d
+            vis.clear_geometries()
+            pcd1.points = o3d.utility.Vector3dVector(cloud1_corr.detach().cpu())
+            pcd1.paint_uniform_color([1, 0, 0])
+            vis.add_geometry(pcd1)
+            vis.update_geometry(pcd1)
+            vis.add_geometry(pcd2)
+            vis.update_geometry(pcd2)
+            vis.poll_events()
+            vis.update_renderer()
 
-                pcd1 = o3d.geometry.PointCloud()
-                pcd1.points = o3d.utility.Vector3dVector(cloud1_corr.cpu())
-                pcd1.paint_uniform_color([1, 0, 0])
-                o3d.visualization.draw_geometries([pcd1, pcd2])
+            print('Distance between clouds: %f', (torch.linalg.norm(pose1[:3, 3] - pose2[:3, 3])))
+            print('Changed pose of the first cloud by: %s [m]' % torch.linalg.norm(xyza1_delta[:3]))
     plt.show()
 
 
