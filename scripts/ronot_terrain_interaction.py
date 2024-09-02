@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+
 # set matplotlib backend to show plots in a separate window
 plt.switch_backend('Qt5Agg')
 
@@ -134,7 +136,7 @@ def step_runge_kutta(x, xd, xdd, dt):
     return x, xd
 
 
-def simulate(x, xd, x_grid, y_grid, z_grid):
+def dphysics(x, xd, x_grid, y_grid, z_grid):
     xs = []
     vs = []
     forces = []
@@ -155,7 +157,7 @@ def simulate(x, xd, x_grid, y_grid, z_grid):
     return xs, vs, forces
 
 
-def main():
+def forward():
     """
     point mass affected by gravity
     """
@@ -172,7 +174,7 @@ def main():
     # z_grid = torch.exp(-x_grid**2 / 10) * torch.exp(-y_grid**2 / 10)
 
     # simulate point mass motion
-    xs, vs, forces = simulate(x0, v0, x_grid, y_grid, z_grid)
+    xs, vs, forces = dphysics(x0, v0, x_grid, y_grid, z_grid)
 
     # plot results
     fig = plt.figure(figsize=(10, 10))
@@ -196,6 +198,53 @@ def main():
             plt.pause(0.01)
 
     plt.show()
+
+
+def optimization():
+    """
+    optimize point mass trajectory
+    """
+    # initial position and velocity
+    x0 = torch.tensor([-4.0, 0.0, 5.0])
+    v0 = torch.tensor([1.0, 0.2, 0.0])
+
+    # heightmap defining the terrain
+    x_grid = torch.arange(-d_max, d_max, grid_res)
+    y_grid = torch.arange(-d_max, d_max, grid_res)
+    x_grid, y_grid = torch.meshgrid(x_grid, y_grid)
+    z_grid_gt = torch.sin(x_grid) + torch.cos(y_grid)
+
+    # simulate point mass motion
+    xs_gt, vs_gt, forces_gt = dphysics(x0, v0, x_grid, y_grid, z_grid_gt)
+
+    # optimize heightmap to fit the trajectory
+    z_grid = torch.zeros(x_grid.shape, requires_grad=True)
+    optimizer = torch.optim.Adam([z_grid], lr=0.01)
+    for i in tqdm(range(200)):
+        optimizer.zero_grad()
+        xs, vs, forces = dphysics(x0, v0, x_grid, y_grid, z_grid)
+        loss = torch.sum((xs - xs_gt) ** 2)
+        loss.backward()
+        optimizer.step()
+        print('Loss:', loss.item())
+
+    # plot results
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    # ax.plot_surface(y_grid.numpy(), x_grid.numpy(), z_grid_gt.numpy(), alpha=0.5, cmap='viridis')
+    ax.plot_surface(y_grid.numpy(), x_grid.numpy(), z_grid.detach().numpy(), alpha=0.5, cmap='viridis')
+    # plot trajectories
+    ax.plot(xs_gt[:, 0].detach().numpy(), xs_gt[:, 1].detach().numpy(), xs_gt[:, 2].detach().numpy(), c='r')
+    ax.plot(xs[:, 0].detach().numpy(), xs[:, 1].detach().numpy(), xs[:, 2].detach().numpy(), c='b')
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    set_axes_equal(ax)
+    plt.show()
+
+def main():
+    forward()
+    # optimization()
 
 
 if __name__ == '__main__':
