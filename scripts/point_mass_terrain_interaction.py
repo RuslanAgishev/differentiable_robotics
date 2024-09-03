@@ -9,7 +9,7 @@ plt.switch_backend('Qt5Agg')
 
 g = 9.81
 dt = 0.1
-T = 4.0
+T = 2.0
 d_max = 6.4
 grid_res = 0.1
 
@@ -87,7 +87,7 @@ def interpolate_height(x_grid, y_grid, z_grid, x_query, y_query):
 
 def force(x, xd, m, x_grid, y_grid, z_grid, k_stiffness=100.0, k_damping=5.0, k_friction=0.5):
     """
-    Calculates the force acting on the point mass.
+    Calculates the force acting on the rigid body.
     """
     # gravity force
     F_grav = torch.tensor([0.0, 0.0, -m * g])
@@ -116,17 +116,26 @@ def force(x, xd, m, x_grid, y_grid, z_grid, k_stiffness=100.0, k_damping=5.0, k_
     # friction force
     F_friction = -k_friction * xd * in_contact
 
+    # thrust force
+    # F_thrust = torch.tensor([1.0, 0.0, 0.0]) * in_contact
+
     # total force
-    F = F_grav + F_spring + F_friction
+    F = F_grav + F_spring + F_friction #+ F_thrust
 
     return F
 
 def step(x, xd, xdd, dt):
+    """
+    Motion of a rigid body using Euler integration step
+    """
     xd = xd + xdd * dt
     x = x + xd * dt
     return x, xd
 
 def step_runge_kutta(x, xd, xdd, dt):
+    """
+    Motion of a rigid body using Runge-Kutta integration step
+    """
     k1 = xdd * dt
     k2 = (xdd + k1 / 2) * dt
     k3 = (xdd + k2 / 2) * dt
@@ -142,7 +151,7 @@ def step_runge_kutta(x, xd, xdd, dt):
 
 def dphysics(x, xd, x_grid, y_grid, z_grid, m=1.0, k_stiffness=100.0, k_damping=5.0, k_friction=0.5):
     """
-    Simulates the motion of a point mass under the influence of gravity and terrain
+    Simulates the motion of a rigid body under the influence of gravity and terrain
     """
     xs = []
     vs = []
@@ -166,7 +175,7 @@ def dphysics(x, xd, x_grid, y_grid, z_grid, m=1.0, k_stiffness=100.0, k_damping=
 
 def forward():
     """
-    point mass affected by gravity
+    rigid body affected by gravity
     """
     # initial position and velocity
     x0 = torch.tensor([-4.0, 0.0, 5.0])
@@ -180,7 +189,7 @@ def forward():
     # z_grid = torch.sin(x_grid) + torch.cos(y_grid)
     z_grid = torch.exp(-x_grid**2 / 10) * torch.exp(-y_grid**2 / 10)
 
-    # simulate point mass motion
+    # simulate rigid body motion
     xs, vs, forces = dphysics(x0, v0, x_grid, y_grid, z_grid, m=1)
 
     # plot results
@@ -198,7 +207,7 @@ def forward():
         F = forces[i]
 
         if i % 1 == 0:
-            # plot point mass
+            # plot rigid body
             ax.scatter(x[0].item(), x[1].item(), x[2].item(), c='r')
             # # plot total force
             # ax.quiver(x[0].item(), x[1].item(), x[2].item(),
@@ -212,7 +221,7 @@ def forward():
 
 def learn_height():
     """
-    optimize point mass trajectory
+    optimize rigid body trajectory
     """
     # initial position and velocity
     x0 = torch.tensor([-4.0, 0.0, 5.0])
@@ -224,7 +233,7 @@ def learn_height():
     x_grid, y_grid = torch.meshgrid(x_grid, y_grid)
     z_grid_gt = torch.sin(x_grid) + torch.cos(y_grid)
 
-    # simulate point mass motion
+    # simulate rigid body motion
     xs_gt, vs_gt, forces_gt = dphysics(x0, v0, x_grid, y_grid, z_grid_gt)
 
     # optimize heightmap to fit the trajectory
@@ -283,7 +292,7 @@ def learn_terrain_properties():
     x_grid, y_grid = torch.meshgrid(x_grid, y_grid)
     z_grid = torch.sin(x_grid) + torch.cos(y_grid)
 
-    # simulate point mass motion
+    # simulate rigid body motion
     xs_gt, vs_gt, forces_gt = dphysics(x0, v0, x_grid, y_grid, z_grid)
 
     # optimize terrain and robot properties to fit the trajectory
@@ -337,9 +346,9 @@ def learn_terrain_properties():
 
 
 def main():
-    # forward()
+    forward()
     # learn_height()
-    learn_terrain_properties()
+    # learn_terrain_properties()
 
 
 if __name__ == '__main__':
