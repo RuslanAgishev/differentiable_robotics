@@ -1,14 +1,13 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 # set matplotlib backend to show plots in a separate window
 plt.switch_backend('Qt5Agg')
 
 
 g = 9.81
 dt = 0.01
-T = 5.0
+T = 10.0
 d_max = 6.4
 grid_res = 0.1
 
@@ -142,32 +141,40 @@ def surface_normals_and_tangents(x_grid, y_grid, z_grid, x_query, y_query):
     y_i = (y_query + d_max) / grid_res
     x_i = torch.clamp(x_i, 0, len(x_grid) - 2).long()
     y_i = torch.clamp(y_i, 0, len(y_grid) - 2).long()
-    dz_dx = (z_grid[x_i + 1, y_i] - z_grid[x_i - 1, y_i]) / (2*grid_res)
-    dz_dy = (z_grid[x_i, y_i + 1] - z_grid[x_i, y_i - 1]) / (2*grid_res)
+    dz_dx = (z_grid[x_i + 1, y_i] - z_grid[x_i , y_i]) / grid_res
+    dz_dy = (z_grid[x_i, y_i + 1] - z_grid[x_i, y_i]) / grid_res
+
+    # n = [-dz_dx, -dz_dy, 1]
     n = torch.stack([
         -dz_dx,
         -dz_dy,
         torch.ones_like(x_i)
     ], dim=-1)
-    n = normailized(n)
+
     # tau1 = [1, 0, dz_dx]
     tau1 = torch.stack([
         torch.ones_like(x_i),
         torch.zeros_like(x_i),
         dz_dx
     ], dim=-1)
-    tau1 = normailized(tau1)
+
     # tau2 = [0, 1, dz_dy]
     tau2 = torch.stack([
         torch.zeros_like(x_i),
         torch.ones_like(x_i),
         dz_dy
     ], dim=-1)
+
+    n = normailized(n)
+    tau1 = normailized(tau1)
     tau2 = normailized(tau2)
 
     return n, tau1, tau2
 
 def rigid_body_params():
+    np.random.seed(42)
+    torch.manual_seed(42)
+
     # # sample x_points from a sphere
     # n_points = 36
     # theta = torch.linspace(0, 2 * np.pi, int(np.sqrt(n_points)))
@@ -182,22 +189,27 @@ def rigid_body_params():
     # Z = Z.flatten()
     # x_points = torch.stack([X, Y, Z], dim=-1)
 
-    # sample points from a parallelepiped (not only its vertices)
-    x_points = torch.tensor(np.random.uniform(-0.5, 0.5, (20, 3)), dtype=torch.float32)
-    x_points = x_points * torch.tensor([0.8, 0.5, 0.2])
+    # # sample points from a parallelepiped (not only its vertices)
+    # x_points = torch.tensor(np.random.uniform(-0.5, 0.5, (20, 3)), dtype=torch.float32)
+    # x_points = x_points * torch.tensor([0.8, 0.5, 0.2])
 
-    # import open3d as o3d
-    # robot = 'tradr'
-    # mesh_file = f'/home/ruslan/workspaces/traversability_ws/src/monoforce/monoforce/data/meshes/{robot}.obj'
-    # mesh = o3d.io.read_triangle_mesh(mesh_file)
-    # n_points = 20
-    # x_points = np.asarray(mesh.sample_points_uniformly(n_points).points)
-    # x_points = torch.tensor(x_points, dtype=torch.float32)
+    import open3d as o3d
+    robot = 'tradr'
+    mesh_file = f'/home/ruslan/workspaces/traversability_ws/src/monoforce/monoforce/data/meshes/{robot}.obj'
+    mesh = o3d.io.read_triangle_mesh(mesh_file)
+    n_points = 20
+    x_points = np.asarray(mesh.sample_points_uniformly(n_points).points)
+    x_points = torch.tensor(x_points, dtype=torch.float32)
+
+    # devide the point cloud into left and right parts
+    x_mean = x_points.mean(dim=0)
+    mask_left = x_points[:, 1] > x_mean[1]
+    mask_right = x_points[:, 1] < x_mean[1]
 
     m = 10.0
     I = 100. * torch.eye(3)  # inertia tensor
 
-    return x_points, m, I
+    return x_points, m, I, mask_left, mask_right
 
 
 def heightmap(d_max, grid_res):
@@ -229,9 +241,71 @@ def skew_symmetric(v):
     ])
 
 
+def forward(x, xd, R, omega, x_points, xd_points,
+            x_grid, y_grid, z_grid,
+            m, I_inv, mask_left, mask_right, u_left, u_right,
+            k_stiffness, k_damping, k_friction):
+    # check if the rigid body is in contact with the terrain
+    z_points = interpolate_height(x_grid, y_grid, z_grid, x_points[:, 0], x_points[:, 1])
+    dh_points = x_points[:, 2:3] - z_points[:, None]
+    # in_contact = torch.sigmoid(-dh_points)
+    in_contact = (dh_points <= 0).float()
+
+    # compute surface normals and tangents at the contact points
+    n, _, _ = surface_normals_and_tangents(x_grid, y_grid, z_grid, x_points[:, 0], x_points[:, 1])
+    n = n * in_contact
+
+    # reaction at the contact points as spring-damper forces
+    F_spring = -(k_stiffness * dh_points + k_damping * xd_points) * n * in_contact
+    # only allow forces in the z direction
+    F_spring = F_spring * torch.sign(F_spring @ torch.tensor([[0.0, 0.0, 1.0]]).T)
+    # # avoid too large forces
+    # F_spring = torch.clamp(F_spring, -10*m * g, 10*m * g)
+
+    # friction forces: https://en.wikipedia.org/wiki/Friction
+    N = torch.norm(F_spring, dim=-1, keepdim=True)
+    tau = normailized(xd_points - (xd_points * n).sum(dim=-1, keepdims=True) * n)
+    F_friction = -k_friction * N * tau * in_contact
+
+    # thrust forces: left and right
+    thrust_dir = normailized(R @ torch.tensor([1.0, 0.0, 0.0]))
+    x_left = x_points[mask_left].mean(dim=0)
+    x_right = x_points[mask_right].mean(dim=0)
+    F_thrust_left = u_left * thrust_dir
+    F_thrust_right = u_right * thrust_dir
+    torque_left = torch.cross(x_left - x, F_thrust_left)
+    torque_right = torch.cross(x_right - x, F_thrust_right)
+    torque_thrust = torque_left + torque_right
+
+    # rigid body rotation
+    torque = torch.sum(torch.cross(x_points - x, F_spring + F_friction), dim=0) + torque_thrust
+    omega_d = I_inv @ torque
+    omega_skew = skew_symmetric(omega)
+    dR = omega_skew @ R
+
+    # motion of the cog
+    F_grav = torch.tensor([0.0, 0.0, -m * g])
+    F_cog = F_grav + F_spring.mean(dim=0) + F_friction.sum(dim=0) + F_thrust_left + F_thrust_right
+    xdd = F_cog / m
+
+    # motion of point composed of cog motion and rotation of the rigid body
+    xd_points = xd + torch.cross(omega.view(1, 3), x_points - x)  # Koenig's theorem in mechanics
+
+    return xd, xdd, dR, omega_d, xd_points, F_spring, F_friction, F_thrust_left, F_thrust_right
+
+
+def update_states(x, xd, xdd, R, dR, omega, omega_d, x_points, xd_points, dt):
+    xd = integration_step(xd, xdd, dt)
+    x = integration_step(x, xd, dt)
+    x_points = integration_step(x_points, xd_points, dt)
+    omega = integration_step(omega, omega_d, dt)
+    R = integration_step(R, dR, dt)
+
+    return x, xd, R, omega, x_points
+
 def motion():
     # rigid body points
-    x_points, m, I = rigid_body_params()
+    x_points, m, I, mask_left, mask_right = rigid_body_params()
 
     # initial state
     x = torch.tensor([1.0, 0.0, 1.0])
@@ -254,49 +328,17 @@ def motion():
     k_stiffness = 1_000.0
     k_damping = np.sqrt(4 * m * k_stiffness)  # critical damping
     k_friction = 0.01
-    F_grav = torch.tensor([0.0, 0.0, -m * g])
-    Z = torch.tensor([0.0, 0.0, 1.0]).view(3, 1)
     for i in range(int(T / dt)):
-        # check if the rigid body is in contact with the terrain
-        z_points = interpolate_height(x_grid, y_grid, z_grid, x_points[:, 0], x_points[:, 1])
-        dh_points = x_points[:, 2:3] - z_points[:, None]
-        # in_contact = torch.sigmoid(-dh_points)
-        in_contact = (dh_points <= 0).float()
-
-        # compute surface normals and tangents at the contact points
-        n, _, _ = surface_normals_and_tangents(x_grid, y_grid, z_grid, x_points[:, 0], x_points[:, 1])
-        n = n * in_contact
-
-        # reaction at the contact points as spring-damper forces
-        F_spring = -(k_stiffness * dh_points + k_damping * xd_points) * n * in_contact
-        F_spring = F_spring * torch.sign(F_spring @ Z)  # only allow forces in the z direction
-        # # avoid too large forces
-        # F_spring = torch.clamp(F_spring, -10*m * g, 10*m * g)
-
-        # friction forces: https://en.wikipedia.org/wiki/Friction
-        N = torch.norm(F_spring, dim=-1, keepdim=True)
-        tau = normailized(xd_points - (xd_points * n).sum(dim=-1, keepdims=True) * n)
-        F_friction = -k_friction * N * tau * in_contact
-
-        # rigid body rotation
-        torque = torch.sum(torch.cross(x_points - x, F_spring + F_friction), dim=0)
-        omega_d = I_inv @ torque
-
-        # motion of the cog
-        F_cog = F_grav + F_spring.mean(dim=0) + F_friction.sum(dim=0)
-        xdd = F_cog / m
-
-        # motion of point composed of cog motion and rotation of the rigid body
-        xd_points = xd + torch.cross(omega.view(1, 3), x_points - x)  # Koenig's theorem in mechanics
-
+        # control inputs
+        u_left, u_right = 10.0, 10.0  # thrust forces, Newtons or kg*m/s^2
+        # forward dynamics
+        (xd, xdd, dR, omega_d, xd_points,
+         F_spring, F_friction, F_thrust_left, F_thrust_right) = forward(x, xd, R, omega, x_points, xd_points,
+                                                                        x_grid, y_grid, z_grid,
+                                                                        m, I_inv, mask_left, mask_right, u_left, u_right,
+                                                                        k_stiffness, k_damping, k_friction)
         # update states: integration steps
-        xd = integration_step(xd, xdd, dt)
-        x = integration_step(x, xd, dt)
-        x_points = integration_step(x_points, xd_points, dt)
-        omega = integration_step(omega, omega_d, dt)
-        omega_skew = skew_symmetric(omega)
-        dR = omega_skew @ R
-        R = integration_step(R, dR, dt)
+        x, xd, R, omega, x_points = update_states(x, xd, xdd, R, dR, omega, omega_d, x_points, xd_points, dt)
 
         # store trajectory
         xs.append(x)
@@ -338,6 +380,12 @@ def motion():
 
                 # # plot friction forces
                 # ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_friction[:, 0], F_friction[:, 1], F_friction[:, 2], color='g')
+
+                # plot thrust forces
+                ax.quiver(x_points[mask_left].mean(dim=0)[0], x_points[mask_left].mean(dim=0)[1], x_points[mask_left].mean(dim=0)[2],
+                          F_thrust_left[0], F_thrust_left[1], F_thrust_left[2], color='r')
+                ax.quiver(x_points[mask_right].mean(dim=0)[0], x_points[mask_right].mean(dim=0)[1], x_points[mask_right].mean(dim=0)[2],
+                          F_thrust_right[0], F_thrust_right[1], F_thrust_right[2], color='r')
 
                 set_axes_equal(ax)
                 plt.pause(0.01)
