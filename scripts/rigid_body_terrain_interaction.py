@@ -271,8 +271,8 @@ def forward(x, xd, R, omega, x_points, xd_points,
     thrust_dir = normailized(R @ torch.tensor([1.0, 0.0, 0.0]))
     x_left = x_points[mask_left].mean(dim=0)
     x_right = x_points[mask_right].mean(dim=0)
-    F_thrust_left = u_left * thrust_dir
-    F_thrust_right = u_right * thrust_dir
+    F_thrust_left = u_left * thrust_dir * in_contact[mask_left].mean()
+    F_thrust_right = u_right * thrust_dir * in_contact[mask_right].mean()
     torque_left = torch.cross(x_left - x, F_thrust_left)
     torque_right = torch.cross(x_right - x, F_thrust_right)
     torque_thrust = torque_left + torque_right
