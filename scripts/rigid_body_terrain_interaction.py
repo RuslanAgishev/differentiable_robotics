@@ -1,12 +1,14 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm import tqdm
 
 # set matplotlib backend to show plots in a separate window
 plt.switch_backend('Qt5Agg')
+# set random seed for reproducibility
+np.random.seed(42)
+torch.manual_seed(42)
 
-
+# constants
 g = 9.81
 d_max = 6.4
 grid_res = 0.1
@@ -122,7 +124,7 @@ def normailized(x, eps=1e-6):
     return x / (torch.norm(x, dim=-1, keepdim=True) + eps)
 
 
-def surface_normals_and_tangents(x_grid, y_grid, z_grid, x_query, y_query):
+def surface_normals(x_grid, y_grid, z_grid, x_query, y_query):
     """
     Computes the surface normals and tangents at the queried coordinates.
 
@@ -150,64 +152,38 @@ def surface_normals_and_tangents(x_grid, y_grid, z_grid, x_query, y_query):
         -dz_dy,
         torch.ones_like(x_i)
     ], dim=-1)
-
-    # tau1 = [1, 0, dz_dx]
-    tau1 = torch.stack([
-        torch.ones_like(x_i),
-        torch.zeros_like(x_i),
-        dz_dx
-    ], dim=-1)
-
-    # tau2 = [0, 1, dz_dy]
-    tau2 = torch.stack([
-        torch.zeros_like(x_i),
-        torch.ones_like(x_i),
-        dz_dy
-    ], dim=-1)
-
     n = normailized(n)
-    tau1 = normailized(tau1)
-    tau2 = normailized(tau2)
 
-    return n, tau1, tau2
+    return n
 
 def rigid_body_params():
-    np.random.seed(42)
-    torch.manual_seed(42)
+    """
+    Returns the parameters of the rigid body.
+    """
+    # import open3d as o3d
+    # robot = 'husky'
+    # mesh_file = f'../data/meshes/{robot}.obj'
+    # mesh = o3d.io.read_triangle_mesh(mesh_file)
+    # n_points = 20
+    # x_points = np.asarray(mesh.sample_points_uniformly(n_points).points)
+    # x_points = torch.tensor(x_points, dtype=torch.float32)
 
-    # # sample x_points from a sphere
-    # n_points = 36
-    # theta = torch.linspace(0, 2 * np.pi, int(np.sqrt(n_points)))
-    # phi = torch.linspace(0, np.pi, int(np.sqrt(n_points)))
-    # theta, phi = torch.meshgrid(theta, phi)
-    # r = 0.5
-    # X = r * torch.sin(phi) * torch.cos(theta)
-    # Y = r * torch.sin(phi) * torch.sin(theta)
-    # Z = r * torch.cos(phi)
-    # X = X.flatten()
-    # Y = Y.flatten()
-    # Z = Z.flatten()
-    # x_points = torch.stack([X, Y, Z], dim=-1)
+    size = (1.0, 0.5)
+    s_x, s_y = size
+    x_points = torch.stack([
+        torch.hstack([torch.linspace(-s_x / 2., s_x / 2., 16 // 2), torch.linspace(-s_x / 2., s_x / 2., 16 // 2)]),
+        torch.hstack([s_y / 2. * torch.ones(16 // 2), -s_y / 2. * torch.ones(16 // 2)]),
+        torch.hstack([torch.tensor([0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]),
+                      torch.tensor([0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2])])
+    ]).T
 
-    # # sample points from a parallelepiped (not only its vertices)
-    # x_points = torch.tensor(np.random.uniform(-0.5, 0.5, (20, 3)), dtype=torch.float32)
-    # x_points = x_points * torch.tensor([0.8, 0.5, 0.2])
-
-    import open3d as o3d
-    robot = 'husky'
-    mesh_file = f'../data/meshes/{robot}.obj'
-    mesh = o3d.io.read_triangle_mesh(mesh_file)
-    n_points = 20
-    x_points = np.asarray(mesh.sample_points_uniformly(n_points).points)
-    x_points = torch.tensor(x_points, dtype=torch.float32)
-
-    # devide the point cloud into left and right parts
-    x_mean = x_points.mean(dim=0)
-    mask_left = x_points[:, 1] > x_mean[1]
-    mask_right = x_points[:, 1] < x_mean[1]
+    # divide the point cloud into left and right parts
+    cog = x_points.mean(dim=0)
+    mask_left = x_points[:, 1] > cog[1]
+    mask_right = x_points[:, 1] < cog[1]
 
     m = 10.0
-    I = 100. * torch.eye(3)  # inertia tensor
+    I = inertia_tensor(m, x_points)
 
     return x_points, m, I, mask_left, mask_right
 
@@ -217,8 +193,8 @@ def heightmap(d_max, grid_res):
     y_grid = torch.arange(-d_max, d_max, grid_res)
     x_grid, y_grid = torch.meshgrid(x_grid, y_grid)
     # z_grid = torch.zeros(x_grid.shape)
-    # z_grid = 0.5 * torch.sin(x_grid)
-    z_grid = torch.exp(-x_grid ** 2 / 4) * torch.exp(-y_grid ** 2 / 4)
+    # z_grid = torch.sin(x_grid) * torch.cos(y_grid)
+    z_grid = torch.exp(-(x_grid-2) ** 2 / 2) * torch.exp(-y_grid ** 2 / 4)
 
     return x_grid, y_grid, z_grid
 
@@ -241,40 +217,40 @@ def skew_symmetric(v):
     ])
 
 
-def forward(x, xd, R, omega, x_points, xd_points,
-            x_grid, y_grid, z_grid,
-            m, I_inv, mask_left, mask_right, u_left, u_right,
-            k_stiffness, k_damping, k_friction):
+def forward_kinematics(x, xd, R, omega, x_points, xd_points,
+                       x_grid, y_grid, z_grid,
+                       m, I_inv, mask_left, mask_right, u_left, u_right,
+                       k_stiffness, k_damping, k_friction):
     # check if the rigid body is in contact with the terrain
     z_points = interpolate_height(x_grid, y_grid, z_grid, x_points[:, 0], x_points[:, 1])
     dh_points = x_points[:, 2:3] - z_points[:, None]
     # in_contact = torch.sigmoid(-dh_points)
-    in_contact = (dh_points <= 0).float()
+    in_contact = (dh_points <= 0.0).float()
 
-    # compute surface normals and tangents at the contact points
-    n, _, _ = surface_normals_and_tangents(x_grid, y_grid, z_grid, x_points[:, 0], x_points[:, 1])
+    # compute surface normals at the contact points
+    n = surface_normals(x_grid, y_grid, z_grid, x_points[:, 0], x_points[:, 1])
 
     # reaction at the contact points as spring-damper forces
     xd_points_n = (xd_points * n).sum(dim=-1, keepdims=True)  # normal velocity
-    F_spring = -(k_stiffness * dh_points + k_damping * xd_points_n) * n * in_contact
-    # # avoid too large forces
-    # F_spring = torch.clamp(F_spring, -10*m * g, 10*m * g)
+    F_spring = -(k_stiffness * dh_points + k_damping * xd_points_n) * n * in_contact  # F_s = -k * dh - b * v_n
+    # limit the spring forces
+    F_spring = torch.clamp(F_spring, min=0.0, max=2 * m * g)
 
     # friction forces: https://en.wikipedia.org/wiki/Friction
     N = torch.norm(F_spring, dim=-1, keepdim=True)
-    xd_points_tau = xd_points - xd_points_n * n
-    tau = normailized(xd_points_tau)
-    F_friction = -k_friction * N * tau * in_contact
+    xd_points_tau = xd_points - xd_points_n * n  # tangential velocities at the contact points
+    tau = normailized(xd_points_tau)  # tangential directions of the velocities
+    F_friction = -k_friction * N * tau  # F_fr = -k_fr * N * tau
 
     # thrust forces: left and right
     thrust_dir = normailized(R @ torch.tensor([1.0, 0.0, 0.0]))
-    x_left = x_points[mask_left].mean(dim=0)
-    x_right = x_points[mask_right].mean(dim=0)
-    F_thrust_left = u_left * thrust_dir * in_contact[mask_left].mean()
-    F_thrust_right = u_right * thrust_dir * in_contact[mask_right].mean()
-    torque_left = torch.cross(x_left - x, F_thrust_left)
-    torque_right = torch.cross(x_right - x, F_thrust_right)
-    torque_thrust = torque_left + torque_right
+    x_left = x_points[mask_left].mean(dim=0)  # left thrust is applied at the mean of the left points
+    x_right = x_points[mask_right].mean(dim=0)  # right thrust is applied at the mean of the right points
+    F_thrust_left = u_left * thrust_dir * in_contact[mask_left].any()  # F_l = u_l * thrust_dir
+    F_thrust_right = u_right * thrust_dir * in_contact[mask_right].any()  # F_r = u_r * thrust_dir
+    torque_left = torch.cross(x_left - x, F_thrust_left)  # M_l = (x_l - x) x F_l
+    torque_right = torch.cross(x_right - x, F_thrust_right)  # M_r = (x_r - x) x F_r
+    torque_thrust = torque_left + torque_right  # M_thrust = M_l + M_r
 
     # rigid body rotation
     torque = torch.sum(torch.cross(x_points - x, F_spring + F_friction), dim=0) + torque_thrust  # M = sum(r_i x F_i)
@@ -284,8 +260,8 @@ def forward(x, xd, R, omega, x_points, xd_points,
 
     # motion of the cog
     F_grav = torch.tensor([0.0, 0.0, -m * g])
-    F_cog = F_grav + F_spring.mean(dim=0) + F_friction.sum(dim=0) + F_thrust_left + F_thrust_right
-    xdd = F_cog / m
+    F_cog = F_grav + F_spring.sum(dim=0) + F_friction.sum(dim=0) + F_thrust_left + F_thrust_right  # ma = sum(F_i)
+    xdd = F_cog / m  # a = F / m
 
     # motion of point composed of cog motion and rotation of the rigid body
     xd_points = xd + torch.cross(omega.view(1, 3), x_points - x)  # Koenig's theorem in mechanics
@@ -305,7 +281,7 @@ def update_states(x, xd, xdd, R, dR, omega, omega_d, x_points, xd_points, dt):
 def dphysics(state, xd_points,
              x_grid, y_grid, z_grid,
              m, I, mask_left, mask_right, controls,
-             k_stiffness=1000., k_damping=None, k_friction=0.02,
+             k_stiffness=100., k_damping=None, k_friction=0.5,
              T=10.0, dt=0.01):
     # state: x, xd, R, omega, x_points
     x, xd, R, omega, x_points = state
@@ -322,11 +298,11 @@ def dphysics(state, xd_points,
         u_left, u_right = controls[i]  # thrust forces, Newtons or kg*m/s^2
         # forward kinematics
         (xd, xdd, dR, omega_d, xd_points,
-         F_spring, F_friction, F_thrust_left, F_thrust_right) = forward(x, xd, R, omega, x_points, xd_points,
-                                                                        x_grid, y_grid, z_grid,
-                                                                        m, I_inv, mask_left, mask_right, u_left,
-                                                                        u_right,
-                                                                        k_stiffness, k_damping, k_friction)
+         F_spring, F_friction, F_thrust_left, F_thrust_right) = forward_kinematics(x, xd, R, omega, x_points, xd_points,
+                                                                                   x_grid, y_grid, z_grid,
+                                                                                   m, I_inv, mask_left, mask_right, u_left,
+                                                                                   u_right,
+                                                                                   k_stiffness, k_damping, k_friction)
         # update states: integration steps
         x, xd, R, omega, x_points = update_states(x, xd, xdd, R, dR, omega, omega_d, x_points, xd_points, dt)
 
@@ -338,16 +314,68 @@ def dphysics(state, xd_points,
 
     return states, forces
 
+
+def inertia_tensor(mass, points):
+    """
+    Compute the inertia tensor for a rigid body represented by point masses.
+
+    Parameters:
+    mass (float): The total mass of the body.
+    points (array-like): A list or array of points (x, y, z) representing the mass distribution.
+                         Each point contributes equally to the total mass.
+
+    Returns:
+    torch.Tensor: A 3x3 inertia tensor matrix.
+    """
+
+    # Convert points to a tensor
+    points = torch.as_tensor(points)
+
+    # Number of points
+    n_points = points.shape[0]
+
+    # Mass per point: assume uniform mass distribution
+    mass_per_point = mass / n_points
+
+    # Initialize the inertia tensor components
+    Ixx = Iyy = Izz = Ixy = Ixz = Iyz = 0.0
+
+    # Loop over each point and accumulate the inertia tensor components
+    for x, y, z in points:
+        Ixx += mass_per_point * (y ** 2 + z ** 2)
+        Iyy += mass_per_point * (x ** 2 + z ** 2)
+        Izz += mass_per_point * (x ** 2 + y ** 2)
+        Ixy -= mass_per_point * x * y
+        Ixz -= mass_per_point * x * z
+        Iyz -= mass_per_point * y * z
+
+    # Construct the inertia tensor matrix
+    I = torch.tensor([
+        [Ixx, Ixy, Ixz],
+        [Ixy, Iyy, Iyz],
+        [Ixz, Iyz, Izz]
+    ])
+
+    return I
+
 def motion():
     # simulation parameters
     dt = 0.01
-    T = 5.0
+    T = 10.0
+
+    # control inputs
+    controls = 2.6 * torch.tensor([[10.0, 10.0]] * int(T / dt))
 
     # rigid body parameters
     x_points, m, I, mask_left, mask_right = rigid_body_params()
 
+    # terrain parameters
+    k_stiffness = 100.0
+    k_damping = np.sqrt(4 * m * k_stiffness)
+    k_friction = 0.51
+
     # initial state
-    x = torch.tensor([1.0, 0.0, 1.0])
+    x = torch.tensor([-2.0, 0.0, 1.0])
     xd = torch.tensor([0.0, 0.0, 0.0])
     R = torch.eye(3)
     omega = torch.tensor([0.0, 0.0, 0.0])
@@ -357,9 +385,6 @@ def motion():
     # heightmap defining the terrain
     x_grid, y_grid, z_grid = heightmap(d_max, grid_res)
 
-    # control inputs
-    controls = torch.tensor([[10.0, 10.0]] * int(T / dt))
-
     # initial state
     state0 = (x, xd, R, omega, x_points)
 
@@ -368,12 +393,13 @@ def motion():
                               x_grid, y_grid, z_grid,
                               m, I, mask_left, mask_right,
                               controls,
+                              k_stiffness=k_stiffness, k_damping=k_damping, k_friction=k_friction,
                               T=T, dt=dt)
     # visualize
-    visualize(states, x_grid, y_grid, z_grid, forces, vis_step=10)
+    visualize(states, x_grid, y_grid, z_grid, forces=forces, vis_step=10, mask_left=mask_left, mask_right=mask_right)
     
 
-def visualize(states, x_grid, y_grid, z_grid, forces=None, vis_step=1):
+def visualize(states, x_grid, y_grid, z_grid, forces=None, vis_step=1, mask_left=None, mask_right=None):
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
     with torch.no_grad():
@@ -415,16 +441,24 @@ def visualize(states, x_grid, y_grid, z_grid, forces=None, vis_step=1):
                 F = forces[i]
                 F_spring, F_friction, F_thrust_left, F_thrust_right = F
                 # plot normal forces
-                ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_spring[:, 0], F_spring[:, 1], F_spring[:, 2], color='b')
+                # ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_spring[:, 0], F_spring[:, 1], F_spring[:, 2], color='b')
+                F_spring_total = F_spring.sum(dim=0)
+                ax.quiver(x[0], x[1], x[2], F_spring_total[0] / g, F_spring_total[1] / g, F_spring_total[2] / g, color='b')
 
                 # plot friction forces
-                ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_friction[:, 0], F_friction[:, 1], F_friction[:, 2], color='g')
+                # ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_friction[:, 0], F_friction[:, 1], F_friction[:, 2], color='g')
+                F_friction_total = F_friction.sum(dim=0)
+                ax.quiver(x[0], x[1], x[2], F_friction_total[0] / g, F_friction_total[1] / g, F_friction_total[2] / g, color='g')
 
-                # # plot thrust forces
-                # ax.quiver(x_points[mask_left].mean(dim=0)[0], x_points[mask_left].mean(dim=0)[1], x_points[mask_left].mean(dim=0)[2],
-                #           F_thrust_left[0], F_thrust_left[1], F_thrust_left[2], color='r')
-                # ax.quiver(x_points[mask_right].mean(dim=0)[0], x_points[mask_right].mean(dim=0)[1], x_points[mask_right].mean(dim=0)[2],
-                #           F_thrust_right[0], F_thrust_right[1], F_thrust_right[2], color='r')
+                # plot thrust forces
+                if mask_left is not None and mask_right is not None:
+                    ax.quiver(x_points[mask_left].mean(dim=0)[0], x_points[mask_left].mean(dim=0)[1], x_points[mask_left].mean(dim=0)[2],
+                              F_thrust_left[0] / g, F_thrust_left[1] / g, F_thrust_left[2] / g, color='r')
+                    ax.quiver(x_points[mask_right].mean(dim=0)[0], x_points[mask_right].mean(dim=0)[1], x_points[mask_right].mean(dim=0)[2],
+                              F_thrust_right[0] / g, F_thrust_right[1] / g, F_thrust_right[2] / g, color='r')
+                else:
+                    F_thrust_total = F_thrust_left + F_thrust_right
+                    ax.quiver(x[0], x[1], x[2], F_thrust_total[0] / g, F_thrust_total[1] / g, F_thrust_total[2] / g, color='r')
 
             set_axes_equal(ax)
             plt.pause(0.01)
@@ -435,13 +469,16 @@ def visualize(states, x_grid, y_grid, z_grid, forces=None, vis_step=1):
 def optimization():
     # simulation parameters
     dt = 0.01
-    T = 2.0
+    T = 10.0
+    vis = True
+    n_iters = 100
+    lr = 0.002
 
     # rigid body parameters
     x_points, m, I, mask_left, mask_right = rigid_body_params()
 
     # initial state
-    x = torch.tensor([1.0, 0.0, 1.0])
+    x = torch.tensor([-1.0, 0.0, 1.0])
     xd = torch.tensor([0.0, 0.0, 0.0])
     R = torch.eye(3)
     omega = torch.tensor([0.0, 0.0, 0.0])
@@ -452,7 +489,7 @@ def optimization():
     x_grid, y_grid, z_grid_gt = heightmap(d_max, grid_res)
 
     # control inputs
-    controls = torch.tensor([[10.0, 10.0]] * int(T / dt))
+    controls = 2.6 * torch.tensor([[10.0, 10.0]] * int(T / dt))
 
     # initial state
     state0 = (x, xd, R, omega, x_points)
@@ -463,14 +500,16 @@ def optimization():
                                     m, I, mask_left, mask_right,
                                     controls,
                                     T=T, dt=dt)
-    visualize(states_gt, x_grid, y_grid, z_grid_gt, forces_gt, vis_step=10)
+    if vis:
+        visualize(states_gt, x_grid, y_grid, z_grid_gt, forces_gt, vis_step=10)
 
     # initial guess for the heightmap
     z_grid = torch.zeros_like(z_grid_gt, requires_grad=True)
 
     # optimization
-    optimizer = torch.optim.Adam([z_grid], lr=0.01)
-    n_iters = 100
+    optimizer = torch.optim.Adam([z_grid], lr=lr)
+    z_grid_best = z_grid.clone()
+    loss_best = np.inf
     for i in range(n_iters):
         optimizer.zero_grad()
         # simulate the rigid body dynamics
@@ -491,20 +530,24 @@ def optimization():
         loss = loss_x + loss_xd
         loss.backward()
         optimizer.step()
-        print(f'Iteration {i}, Loss x: {loss_x.item()}, Loss xd: {loss_xd.item()}')
+        print(f'Iteration {i}, Loss x: {loss_x.item():.3f}, Loss xd: {loss_xd.item():.3f}')
+
+        if loss.item() < loss_best:
+            loss_best = loss.item()
+            z_grid_best = z_grid.clone()
 
         # heightmap difference
         with torch.no_grad():
             z_diff = torch.nn.functional.mse_loss(z_grid, z_grid_gt)
-            print(f'Heightmap difference: {z_diff.item()}')
+            print(f'Heightmap difference: {z_diff.item():.3f}')
 
-        if i == 0 or i == n_iters - 1:
-            visualize(states, x_grid, y_grid, z_grid, vis_step=10)
+        if vis and (i == 0 or i == n_iters - 1):
+            visualize(states, x_grid, y_grid, z_grid_best, vis_step=10)
 
 
 def main():
-    # motion()
-    optimization()
+    motion()
+    # optimization()
 
 
 if __name__ == '__main__':
