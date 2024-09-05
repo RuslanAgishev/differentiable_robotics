@@ -347,7 +347,7 @@ def motion():
     x_points, m, I, mask_left, mask_right = rigid_body_params()
 
     # initial state
-    x = torch.tensor([1.0, 0.0, 3.0])
+    x = torch.tensor([1.0, 0.0, 1.0])
     xd = torch.tensor([0.0, 0.0, 0.0])
     R = torch.eye(3)
     omega = torch.tensor([0.0, 0.0, 0.0])
@@ -370,12 +370,17 @@ def motion():
                               controls,
                               T=T, dt=dt)
     # visualize
+    visualize(states, x_grid, y_grid, z_grid, forces, vis_step=10)
+    
+
+def visualize(states, x_grid, y_grid, z_grid, forces=None, vis_step=1):
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
     with torch.no_grad():
-        for i, (state, F) in tqdm(enumerate(zip(states[::10], forces[::10])), total=len(states[::10])):
+        for i, state in enumerate(states):
+            if i % vis_step != 0:
+                continue
             x, xd, R, omega, x_points = state
-            F_spring, F_friction, F_thrust_left, F_thrust_right = F
 
             plt.cla()
             ax.set_xlabel('X')
@@ -383,7 +388,7 @@ def motion():
             ax.set_zlabel('Z')
 
             # plot rigid body points and cog
-            ax.scatter(x_points[:, 0].numpy(), x_points[:, 1].numpy(), x_points[:, 2].numpy(), c='k')
+            ax.scatter(x_points[:, 0].cpu(), x_points[:, 1].cpu(), x_points[:, 2].cpu(), c='k')
             ax.scatter(x[0].item(), x[1].item(), x[2].item(), c='r')
 
             # plot rigid body frame
@@ -396,25 +401,30 @@ def motion():
 
             # plot trajectory
             xs_tensor = torch.stack([s[0] for s in states])
-            ax.plot(xs_tensor[:, 0].numpy(), xs_tensor[:, 1].numpy(), xs_tensor[:, 2].numpy(), c='b')
+            ax.plot(xs_tensor[:, 0].cpu(), xs_tensor[:, 1].cpu(), xs_tensor[:, 2].cpu(), c='b')
 
             # plot cog velocity
             ax.quiver(x[0], x[1], x[2], xd[0], xd[1], xd[2], color='k')
 
             # plot terrain
-            ax.plot_surface(x_grid.numpy(), y_grid.numpy(), z_grid.numpy(), alpha=0.5, cmap='terrain')
+            ax.plot_surface(x_grid.cpu(), y_grid.cpu(), z_grid.cpu(), alpha=0.5, cmap='terrain')
+            
+            # plot forces
+            if forces is not None:
+                assert len(forces) == len(states)
+                F = forces[i]
+                F_spring, F_friction, F_thrust_left, F_thrust_right = F
+                # plot normal forces
+                ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_spring[:, 0], F_spring[:, 1], F_spring[:, 2], color='b')
 
-            # # plot normal forces
-            # ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_spring[:, 0], F_spring[:, 1], F_spring[:, 2], color='b')
-            #
-            # # plot friction forces
-            # ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_friction[:, 0], F_friction[:, 1], F_friction[:, 2], color='g')
-            #
-            # # plot thrust forces
-            # ax.quiver(x_points[mask_left].mean(dim=0)[0], x_points[mask_left].mean(dim=0)[1], x_points[mask_left].mean(dim=0)[2],
-            #           F_thrust_left[0], F_thrust_left[1], F_thrust_left[2], color='r')
-            # ax.quiver(x_points[mask_right].mean(dim=0)[0], x_points[mask_right].mean(dim=0)[1], x_points[mask_right].mean(dim=0)[2],
-            #           F_thrust_right[0], F_thrust_right[1], F_thrust_right[2], color='r')
+                # plot friction forces
+                ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_friction[:, 0], F_friction[:, 1], F_friction[:, 2], color='g')
+
+                # # plot thrust forces
+                # ax.quiver(x_points[mask_left].mean(dim=0)[0], x_points[mask_left].mean(dim=0)[1], x_points[mask_left].mean(dim=0)[2],
+                #           F_thrust_left[0], F_thrust_left[1], F_thrust_left[2], color='r')
+                # ax.quiver(x_points[mask_right].mean(dim=0)[0], x_points[mask_right].mean(dim=0)[1], x_points[mask_right].mean(dim=0)[2],
+                #           F_thrust_right[0], F_thrust_right[1], F_thrust_right[2], color='r')
 
             set_axes_equal(ax)
             plt.pause(0.01)
@@ -422,9 +432,79 @@ def motion():
         plt.show()
 
 
+def optimization():
+    # simulation parameters
+    dt = 0.01
+    T = 2.0
+
+    # rigid body parameters
+    x_points, m, I, mask_left, mask_right = rigid_body_params()
+
+    # initial state
+    x = torch.tensor([1.0, 0.0, 1.0])
+    xd = torch.tensor([0.0, 0.0, 0.0])
+    R = torch.eye(3)
+    omega = torch.tensor([0.0, 0.0, 0.0])
+    x_points = x_points @ R.T + x
+    xd_points = xd.repeat(len(x_points), 1)
+
+    # heightmap defining the terrain
+    x_grid, y_grid, z_grid_gt = heightmap(d_max, grid_res)
+
+    # control inputs
+    controls = torch.tensor([[10.0, 10.0]] * int(T / dt))
+
+    # initial state
+    state0 = (x, xd, R, omega, x_points)
+
+    # simulate the rigid body dynamics
+    states_gt, forces_gt = dphysics(state0, xd_points,
+                                    x_grid, y_grid, z_grid_gt,
+                                    m, I, mask_left, mask_right,
+                                    controls,
+                                    T=T, dt=dt)
+    visualize(states_gt, x_grid, y_grid, z_grid_gt, forces_gt, vis_step=10)
+
+    # initial guess for the heightmap
+    z_grid = torch.zeros_like(z_grid_gt, requires_grad=True)
+
+    # optimization
+    optimizer = torch.optim.Adam([z_grid], lr=0.01)
+    n_iters = 100
+    for i in range(n_iters):
+        optimizer.zero_grad()
+        # simulate the rigid body dynamics
+        states, forces = dphysics(state0, xd_points,
+                                  x_grid, y_grid, z_grid,
+                                  m, I, mask_left, mask_right,
+                                  controls,
+                                  T=T, dt=dt)
+        # unroll the states
+        xs, xds, Rs, omegas, x_points = zip(*states)
+        xs_gt, xds_gt, Rs_gt, omegas_gt, x_points_gt = zip(*states_gt)
+
+        # compute the loss
+        xs, xds, Rs, omegas, x_points = torch.stack(xs), torch.stack(xds), torch.stack(Rs), torch.stack(omegas), torch.stack(x_points)
+        xs_gt, xds_gt, Rs_gt, omegas_gt, x_points_gt = torch.stack(xs_gt), torch.stack(xds_gt), torch.stack(Rs_gt), torch.stack(omegas_gt), torch.stack(x_points_gt)
+        loss_x = torch.nn.functional.mse_loss(xs, xs_gt)
+        loss_xd = torch.tensor(0.0)  # torch.nn.functional.mse_loss(xds, xds_gt)
+        loss = loss_x + loss_xd
+        loss.backward()
+        optimizer.step()
+        print(f'Iteration {i}, Loss x: {loss_x.item()}, Loss xd: {loss_xd.item()}')
+
+        # heightmap difference
+        with torch.no_grad():
+            z_diff = torch.nn.functional.mse_loss(z_grid, z_grid_gt)
+            print(f'Heightmap difference: {z_diff.item()}')
+
+        if i == 0 or i == n_iters - 1:
+            visualize(states, x_grid, y_grid, z_grid, vis_step=10)
+
+
 def main():
-    motion()
-    # optimization()
+    # motion()
+    optimization()
 
 
 if __name__ == '__main__':
