@@ -465,7 +465,7 @@ def visualize(states, x_grid, y_grid, z_grid, forces=None, vis_step=1, mask_left
 def optimization():
     # simulation parameters
     dt = 0.01
-    T = 10.0
+    T = 5.0
     vis = True
     n_iters = 100
     lr = 0.002
@@ -484,8 +484,8 @@ def optimization():
     # heightmap defining the terrain
     x_grid, y_grid, z_grid_gt = heightmap(d_max, grid_res)
 
-    # control inputs
-    controls = 2.6 * torch.tensor([[10.0, 10.0]] * int(T / dt))
+    # control inputs in Newtons
+    controls = torch.tensor([[110.0, 110.0]] * int(T / dt))
 
     # initial state
     state0 = (x, xd, R, omega, x_points)
@@ -522,7 +522,7 @@ def optimization():
         xs, xds, Rs, omegas, x_points = torch.stack(xs), torch.stack(xds), torch.stack(Rs), torch.stack(omegas), torch.stack(x_points)
         xs_gt, xds_gt, Rs_gt, omegas_gt, x_points_gt = torch.stack(xs_gt), torch.stack(xds_gt), torch.stack(Rs_gt), torch.stack(omegas_gt), torch.stack(x_points_gt)
         loss_x = torch.nn.functional.mse_loss(xs, xs_gt)
-        loss_xd = torch.tensor(0.0)  # torch.nn.functional.mse_loss(xds, xds_gt)
+        loss_xd = torch.nn.functional.mse_loss(xds, xds_gt)
         loss = loss_x + loss_xd
         loss.backward()
         optimizer.step()
@@ -535,15 +535,15 @@ def optimization():
         # heightmap difference
         with torch.no_grad():
             z_diff = torch.nn.functional.mse_loss(z_grid, z_grid_gt)
-            print(f'Heightmap difference: {z_diff.item():.3f}')
+            print(f'Heightmap difference: {z_diff.item()}')
 
         if vis and (i == 0 or i == n_iters - 1):
             visualize(states, x_grid, y_grid, z_grid_best, vis_step=10)
 
 
 def main():
-    motion()
-    # optimization()
+    # motion()
+    optimization()
 
 
 if __name__ == '__main__':
