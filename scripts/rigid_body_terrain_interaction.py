@@ -195,7 +195,7 @@ def heightmap(d_max, grid_res):
     x_grid, y_grid = torch.meshgrid(x_grid, y_grid)
     # z_grid = torch.zeros(x_grid.shape)
     # z_grid = torch.sin(x_grid) * torch.cos(y_grid)
-    z_grid = torch.exp(-(x_grid-2) ** 2 / 2) * torch.exp(-y_grid ** 2 / 4)
+    z_grid = torch.exp(-(x_grid) ** 2 / 4) * torch.exp(-(y_grid-2) ** 2 / 2)
 
     return x_grid, y_grid, z_grid
 
@@ -282,7 +282,7 @@ def update_states(x, xd, xdd, R, dR, omega, omega_d, x_points, xd_points, dt):
 def dphysics(state, xd_points,
              x_grid, y_grid, z_grid,
              m, I, mask_left, mask_right, controls,
-             k_stiffness=100., k_damping=None, k_friction=0.5,
+             k_stiffness=1000., k_damping=None, k_friction=0.5,
              T=10.0, dt=0.01):
     # state: x, xd, R, omega, x_points
     x, xd, R, omega, x_points = state
@@ -364,16 +364,11 @@ def motion():
     dt = 0.01
     T = 10.0
 
-    # control inputs
-    controls = 2.6 * torch.tensor([[10.0, 10.0]] * int(T / dt))
+    # control inputs in Newtons
+    controls = torch.tensor([[110.0, 110.0]] * int(T / dt))
 
     # rigid body parameters
     x_points, m, I, mask_left, mask_right = rigid_body_params()
-
-    # terrain parameters
-    k_stiffness = 100.0
-    k_damping = np.sqrt(4 * m * k_stiffness)
-    k_friction = 0.51
 
     # initial state
     x = torch.tensor([-2.0, 0.0, 1.0])
@@ -394,8 +389,8 @@ def motion():
                               x_grid, y_grid, z_grid,
                               m, I, mask_left, mask_right,
                               controls,
-                              k_stiffness=k_stiffness, k_damping=k_damping, k_friction=k_friction,
                               T=T, dt=dt)
+
     # visualize
     visualize(states, x_grid, y_grid, z_grid, forces=forces, vis_step=10, mask_left=mask_left, mask_right=mask_right)
     
@@ -433,8 +428,8 @@ def visualize(states, x_grid, y_grid, z_grid, forces=None, vis_step=1, mask_left
             # plot cog velocity
             ax.quiver(x[0], x[1], x[2], xd[0], xd[1], xd[2], color='k')
 
-            # plot terrain
-            ax.plot_surface(x_grid.cpu(), y_grid.cpu(), z_grid.cpu(), alpha=0.5, cmap='terrain')
+            # plot terrain: somehow the height map is flipped, need to transpose it
+            ax.plot_surface(x_grid.cpu(), y_grid.cpu(), z_grid.cpu().T, alpha=0.5, cmap='terrain')
             
             # plot forces
             if forces is not None:
