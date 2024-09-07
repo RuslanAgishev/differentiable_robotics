@@ -182,8 +182,9 @@ def rigid_body_params():
     mask_left = x_points[:, 1] > cog[1]
     mask_right = x_points[:, 1] < cog[1]
 
-    m = 10.0
+    m = 40.0
     I = inertia_tensor(m, x_points)
+    I *= 100.0  # scale the inertia tensor as the point cloud is sparse
 
     return x_points, m, I, mask_left, mask_right
 
