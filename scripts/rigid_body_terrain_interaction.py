@@ -325,7 +325,7 @@ def forward_kinematics(x, xd, R, omega, x_points, xd_points,
     assert F_friction.shape == (B, n_pts, 3)
 
     # thrust forces: left and right
-    thrust_dir = normailized(R @ torch.tensor([1.0, 0.0, 0.0]))
+    thrust_dir = normailized(R @ torch.tensor([1.0, 0.0, 0.0], device=R.device))
     x_left = x_points[mask_left].mean(dim=0, keepdims=True)  # left thrust is applied at the mean of the left points
     x_right = x_points[mask_right].mean(dim=0, keepdims=True)  # right thrust is applied at the mean of the right points
     F_thrust_left = u_left.unsqueeze(1) * thrust_dir * in_contact[mask_left].any()  # F_l = u_l * thrust_dir
@@ -343,7 +343,7 @@ def forward_kinematics(x, xd, R, omega, x_points, xd_points,
     dR = omega_skew @ R  # dR = [omega]_x R
 
     # motion of the cog
-    F_grav = torch.tensor([[0.0, 0.0, -m * g]])
+    F_grav = torch.tensor([[0.0, 0.0, -m * g]], device=x.device)  # F_grav = [0, 0, -m * g]
     F_cog = F_grav + F_spring.sum(dim=1) + F_friction.sum(dim=1) + F_thrust_left + F_thrust_right  # ma = sum(F_i)
     xdd = F_cog / m  # a = F / m
     assert xdd.shape == (B, 3)
@@ -479,13 +479,13 @@ def motion():
     T = 5.0
 
     # control inputs in Newtons
-    controls = torch.stack([torch.tensor([[110.0, 110.0]] * int(T / dt)), torch.tensor([[110.0, 100.0]] * int(T / dt))])
+    controls = torch.stack([torch.tensor([[110.0, 110.0]] * int(T / dt)), torch.tensor([[-90.0, -100.0]] * int(T / dt))])
 
     # rigid body parameters
     x_points, m, I, mask_left, mask_right = rigid_body_params()
 
     # initial state
-    x = torch.tensor([[-2.0, 0.0, 1.0], [-2.5, 1.0, 1.0]])
+    x = torch.tensor([[-2.0, 0.0, 1.0], [4.0, 0.0, 1.0]])
     xd = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     R = torch.eye(3).repeat(x.shape[0], 1, 1)
     omega = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
@@ -694,9 +694,101 @@ def optimization():
                 visualize_traj(states, x_grid[batch_i], y_grid[batch_i], z_grid_best[batch_i], forces, vis_step=10)
 
 
+def shoot_multiple():
+    from time import time
+    # simulation parameters
+    dt = 0.01
+    T = 5.0
+    num_trajs = 32
+    device = torch.device('cpu')
+
+    def vw_to_track_vel(v, w, r=1.0):
+        # v: linear velocity, w: angular velocity, r: robot radius
+        # v = (v_r + v_l) / 2
+        # w = (v_r - v_l) / (2 * r)
+        v_r = v + r * w
+        v_l = v - r * w
+        return v_r, v_l
+
+    # control inputs in Newtons
+    assert num_trajs % 2 == 0, 'num_trajs must be even'
+    vel_max, omega_max = 1.0, 2 * np.pi
+    vels_x = torch.cat([-vel_max * torch.ones((num_trajs // 2, int(T / dt))),
+                        vel_max * torch.ones((num_trajs // 2, int(T / dt)))])
+    omegas_z = torch.cat([torch.linspace(-omega_max, omega_max, num_trajs // 2),
+                          torch.linspace(-omega_max, omega_max, num_trajs // 2)])
+    assert vels_x.shape == (num_trajs, int(T / dt))
+    assert omegas_z.shape == (num_trajs,)
+    vels = torch.zeros((num_trajs, int(T / dt), 3))
+    vels[:, :, 0] = vels_x
+    omegas = torch.zeros((num_trajs, 3))
+    omegas[:, 2] = omegas_z
+
+    controls = torch.zeros((num_trajs, int(T / dt), 2))
+    for i in range(num_trajs):
+        controls[i, :, 0], controls[i, :, 1] = vw_to_track_vel(vels[i, :, 0], omegas[i, 2])
+    controls = 100 * torch.tensor(controls, dtype=torch.float32)
+
+    # rigid body parameters
+    x_points, m, I, mask_left, mask_right = rigid_body_params()
+
+    # initial state
+    x = torch.tensor([[-1.0, 0.0, 0.2]]).repeat(num_trajs, 1)
+    xd = torch.zeros_like(x)
+    R = torch.eye(3).repeat(x.shape[0], 1, 1)
+    omega = torch.zeros_like(x)
+    x_points = x_points @ R.transpose(1, 2) + x.unsqueeze(1)
+    xd_points = torch.zeros_like(x_points)
+    mask_left = mask_left.repeat(x.shape[0], 1)
+    mask_right = mask_right.repeat(x.shape[0], 1)
+
+    # heightmap defining the terrain
+    x_grid, y_grid, z_grid = heightmap(d_max, grid_res)
+    # repeat the heightmap for each rigid body
+    x_grid = x_grid.repeat(x.shape[0], 1, 1)
+    y_grid = y_grid.repeat(x.shape[0], 1, 1)
+    z_grid = z_grid.repeat(x.shape[0], 1, 1)
+
+    # initial state
+    state0 = (x, xd, R, omega, x_points)
+
+    # put tensors to device
+    state0 = tuple([s.to(device) for s in state0])
+    xd_points = xd_points.to(device)
+    z_grid = z_grid.to(device)
+    I = I.to(device)
+    mask_left = mask_left.to(device)
+    mask_right = mask_right.to(device)
+    controls = controls.to(device)
+
+    # simulate the rigid body dynamics
+    with torch.no_grad():
+        t0 = time()
+        (Xs, Xds, Rs, Omegas, X_points,
+         F_springs, F_frictions, F_thrusts_left, F_thrusts_right) = dphysics(state0, xd_points,
+                                                                             z_grid, d_max, grid_res,
+                                                                             m, I, mask_left, mask_right,
+                                                                             controls,
+                                                                             T=T, dt=dt)
+        print(Xs.shape)
+        print(f'Simulation took {(time()-t0):.3f} [sec] on device: {device}')
+
+    # visualize
+    with torch.no_grad():
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        # plot heightmap
+        ax.plot_surface(x_grid[0].cpu(), y_grid[0].cpu(), z_grid[0].cpu().T, cmap='terrain', alpha=0.4)
+        set_axes_equal(ax)
+        for i in range(num_trajs):
+            ax.plot(Xs[i, :, 0].cpu(), Xs[i, :, 1].cpu(), Xs[i, :, 2].cpu())
+        plt.show()
+
+
 def main():
-    motion()
+    # motion()
     # optimization()
+    shoot_multiple()
 
 
 if __name__ == '__main__':
