@@ -221,9 +221,9 @@ def rigid_body_params():
     # robot = 'husky'
     # mesh_file = f'../data/meshes/{robot}.obj'
     # mesh = o3d.io.read_triangle_mesh(mesh_file)
-    # n_points = 20
+    # n_points = 32
     # x_points = np.asarray(mesh.sample_points_uniformly(n_points).points)
-    # x_points = torch.tensor(x_points, dtype=torch.float32)[None]
+    # x_points = torch.tensor(x_points, dtype=torch.float32)
 
     size = (1.0, 0.5)
     s_x, s_y = size
@@ -474,6 +474,8 @@ def inertia_tensor(mass, points):
     return I
 
 def motion():
+    from scipy.spatial.transform import Rotation
+
     # simulation parameters
     dt = 0.01
     T = 5.0
@@ -488,6 +490,7 @@ def motion():
     x = torch.tensor([[-2.0, 0.0, 1.0], [4.0, 0.0, 1.0]])
     xd = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     R = torch.eye(3).repeat(x.shape[0], 1, 1)
+    # R = torch.tensor(Rotation.from_euler('z', [0.0, np.pi/4]).as_matrix(), dtype=torch.float32)
     omega = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     x_points = x_points @ R.transpose(1, 2) + x.unsqueeze(1)
     xd_points = torch.zeros_like(x_points)
@@ -573,14 +576,16 @@ def visualize_traj(states, x_grid, y_grid, z_grid, forces=None, vis_step=1, mask
                 F_springs, F_frictions, F_thrusts_left, F_thrusts_right = forces
                 F_spring, F_friction, F_thrust_left, F_thrust_right = F_springs[i], F_frictions[i], F_thrusts_left[i], F_thrusts_right[i]
                 # plot normal forces
-                # ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_spring[:, 0], F_spring[:, 1], F_spring[:, 2], color='b')
-                F_spring_total = F_spring.sum(dim=0)
-                ax.quiver(x[0], x[1], x[2], F_spring_total[0] / g, F_spring_total[1] / g, F_spring_total[2] / g, color='b')
+                ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2],
+                          F_spring[:, 0] / g, F_spring[:, 1] / g, F_spring[:, 2] / g, color='b')
+                # F_spring_total = F_spring.sum(dim=0)
+                # ax.quiver(x[0], x[1], x[2], F_spring_total[0] / g, F_spring_total[1] / g, F_spring_total[2] / g, color='b')
 
                 # plot friction forces
-                # ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2], F_friction[:, 0], F_friction[:, 1], F_friction[:, 2], color='g')
-                F_friction_total = F_friction.sum(dim=0)
-                ax.quiver(x[0], x[1], x[2], F_friction_total[0] / g, F_friction_total[1] / g, F_friction_total[2] / g, color='g')
+                ax.quiver(x_points[:, 0], x_points[:, 1], x_points[:, 2],
+                          F_friction[:, 0] / g, F_friction[:, 1] / g, F_friction[:, 2] / g, color='g')
+                # F_friction_total = F_friction.sum(dim=0)
+                # ax.quiver(x[0], x[1], x[2], F_friction_total[0] / g, F_friction_total[1] / g, F_friction_total[2] / g, color='g')
 
                 # plot thrust forces
                 if mask_left is not None and mask_right is not None:
@@ -696,6 +701,8 @@ def optimization():
 
 def shoot_multiple():
     from time import time
+    from scipy.spatial.transform import Rotation
+
     # simulation parameters
     dt = 0.01
     T = 5.0
@@ -736,6 +743,7 @@ def shoot_multiple():
     x = torch.tensor([[-1.0, 0.0, 0.2]]).repeat(num_trajs, 1)
     xd = torch.zeros_like(x)
     R = torch.eye(3).repeat(x.shape[0], 1, 1)
+    # R = torch.tensor(Rotation.from_euler('z', -np.pi/6, degrees=False).as_matrix(), dtype=torch.float32).repeat(num_trajs, 1, 1)
     omega = torch.zeros_like(x)
     x_points = x_points @ R.transpose(1, 2) + x.unsqueeze(1)
     xd_points = torch.zeros_like(x_points)
@@ -771,17 +779,22 @@ def shoot_multiple():
                                                                              controls,
                                                                              T=T, dt=dt)
         print(Xs.shape)
-        print(f'Simulation took {(time()-t0):.3f} [sec] on device: {device}')
+        t1 = time()
+        print(f'Simulation took {(t1-t0):.3f} [sec] on device: {device}')
 
     # visualize
     with torch.no_grad():
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111, projection='3d')
         # plot heightmap
-        ax.plot_surface(x_grid[0].cpu(), y_grid[0].cpu(), z_grid[0].cpu().T, cmap='terrain', alpha=0.4)
+        ax.plot_surface(x_grid[0].cpu(), y_grid[0].cpu(), z_grid[0].cpu().T, cmap='terrain', alpha=0.6)
         set_axes_equal(ax)
         for i in range(num_trajs):
-            ax.plot(Xs[i, :, 0].cpu(), Xs[i, :, 1].cpu(), Xs[i, :, 2].cpu())
+            ax.plot(Xs[i, :, 0].cpu(), Xs[i, :, 1].cpu(), Xs[i, :, 2].cpu(), c='b')
+        ax.set_title(f'Simulation of {num_trajs} trajs (T={T} [sec] long) took {(t1-t0):.3f} [sec] on device: {device}')
+        ax.set_xlabel('X [m]')
+        ax.set_ylabel('Y [m]')
+        ax.set_zlabel('Z [m]')
         plt.show()
 
 
