@@ -133,35 +133,6 @@ def normailized(x, eps=1e-6):
     return x / (torch.norm(x, dim=-1, keepdim=True) + eps)
 
 
-# def surface_normals(x_grid, y_grid, z_grid, x_query, y_query):
-#     """
-#     Computes the surface normals and tangents at the queried coordinates.
-#
-#     Parameters:
-#     - x_grid: Tensor of x coordinates (3D array), where the first dimension is the batch (B, H, W).
-#     - y_grid: Tensor of y coordinates (3D array), where the first dimension is the batch (B, H, W).
-#     - z_grid: Tensor of z values (heights) corresponding to the x and y coordinates (3D array), (B, H, W).
-#     - x_query: Tensor of desired x coordinates for interpolation (2D array), (B, N).
-#     - y_query: Tensor of desired y coordinates for interpolation (2D array), (B, N).
-#
-#     Returns:
-#     - Surface normals and tangents at the queried coordinates.
-#     """
-#     # Interpolate the height at the queried coordinates
-#     x_i = (x_query + d_max) / grid_res
-#     y_i = (y_query + d_max) / grid_res
-#     B, H, W = x_grid.shape
-#     x_i = torch.clamp(x_i, 0, H - 2).long()
-#     y_i = torch.clamp(y_i, 0, W - 2).long()
-#     dz_dx = (z_grid[:, y_i, x_i + 1] - z_grid[:, y_i, x_i]) / grid_res
-#     dz_dy = (z_grid[:, y_i + 1, x_i] - z_grid[:, y_i, x_i]) / grid_res
-#
-#     # n = [-dz_dx, -dz_dy, 1]
-#     n = torch.stack([-dz_dx, -dz_dy, torch.ones_like(dz_dx)], dim=-1)
-#     n = normailized(n)
-#
-#     return n
-
 def surface_normals(z_grid, x_query, y_query, d_max, grid_res):
     """
     Computes the surface normals and tangents at the queried coordinates.
@@ -208,31 +179,32 @@ def surface_normals(z_grid, x_query, y_query, d_max, grid_res):
     # Compute the surface normals
     dz_dx = (z10 - z00) * (1 - y_f) + (z11 - z01) * y_f
     dz_dy = (z01 - z00) * (1 - x_f) + (z11 - z10) * x_f
-    n = torch.stack([-dz_dx, -dz_dy, torch.ones_like(dz_dx)], dim=-1)
+    n = torch.stack([-dz_dx, -dz_dy, torch.ones_like(dz_dx)], dim=-1)  # n = [-dz/dx, -dz/dy, 1]
     n = normailized(n)
 
     return n
 
-def rigid_body_params():
+def rigid_body_params(from_mesh=False):
     """
     Returns the parameters of the rigid body.
     """
-    # import open3d as o3d
-    # robot = 'husky'
-    # mesh_file = f'../data/meshes/{robot}.obj'
-    # mesh = o3d.io.read_triangle_mesh(mesh_file)
-    # n_points = 32
-    # x_points = np.asarray(mesh.sample_points_uniformly(n_points).points)
-    # x_points = torch.tensor(x_points, dtype=torch.float32)
-
-    size = (1.0, 0.5)
-    s_x, s_y = size
-    x_points = torch.stack([
-        torch.hstack([torch.linspace(-s_x / 2., s_x / 2., 16 // 2), torch.linspace(-s_x / 2., s_x / 2., 16 // 2)]),
-        torch.hstack([s_y / 2. * torch.ones(16 // 2), -s_y / 2. * torch.ones(16 // 2)]),
-        torch.hstack([torch.tensor([0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]),
-                      torch.tensor([0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2])])
-    ]).T
+    if from_mesh:
+        import open3d as o3d
+        robot = 'tradr'
+        mesh_file = f'../data/meshes/{robot}.obj'
+        mesh = o3d.io.read_triangle_mesh(mesh_file)
+        n_points = 32
+        x_points = np.asarray(mesh.sample_points_uniformly(n_points).points)
+        x_points = torch.tensor(x_points, dtype=torch.float32)
+    else:
+        size = (1.0, 0.5)
+        s_x, s_y = size
+        x_points = torch.stack([
+            torch.hstack([torch.linspace(-s_x / 2., s_x / 2., 16 // 2), torch.linspace(-s_x / 2., s_x / 2., 16 // 2)]),
+            torch.hstack([s_y / 2. * torch.ones(16 // 2), -s_y / 2. * torch.ones(16 // 2)]),
+            torch.hstack([torch.tensor([0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2]),
+                          torch.tensor([0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2])])
+        ]).T
 
     # divide the point cloud into left and right parts
     cog = x_points.mean(dim=0)
@@ -246,13 +218,18 @@ def rigid_body_params():
     return x_points, m, I, mask_left, mask_right
 
 
-def heightmap(d_max, grid_res):
+def heightmap(d_max, grid_res, mode='zeros'):
     x_grid = torch.arange(-d_max, d_max, grid_res)
     y_grid = torch.arange(-d_max, d_max, grid_res)
     x_grid, y_grid = torch.meshgrid(x_grid, y_grid)
-    # z_grid = torch.zeros(x_grid.shape)
-    # z_grid = torch.sin(x_grid) * torch.cos(y_grid)
-    z_grid = torch.exp(-(x_grid) ** 2 / 4) * torch.exp(-(y_grid-2) ** 2 / 2)
+    if mode == 'zeros':
+        z_grid = torch.zeros(x_grid.shape)
+    elif mode == 'sin':
+        z_grid = torch.sin(x_grid) * torch.cos(y_grid)
+    elif mode == 'exp':
+        z_grid = torch.exp(-(x_grid) ** 2 / 4) * torch.exp(-(y_grid-2) ** 2 / 2)
+    else:
+        raise ValueError(f'Invalid mode: {mode}')
 
     return x_grid, y_grid, z_grid
 
@@ -328,8 +305,8 @@ def forward_kinematics(x, xd, R, omega, x_points, xd_points,
     thrust_dir = normailized(R @ torch.tensor([1.0, 0.0, 0.0], device=R.device))
     x_left = x_points[mask_left].mean(dim=0, keepdims=True)  # left thrust is applied at the mean of the left points
     x_right = x_points[mask_right].mean(dim=0, keepdims=True)  # right thrust is applied at the mean of the right points
-    F_thrust_left = u_left.unsqueeze(1) * thrust_dir * in_contact[mask_left].any()  # F_l = u_l * thrust_dir
-    F_thrust_right = u_right.unsqueeze(1) * thrust_dir * in_contact[mask_right].any()  # F_r = u_r * thrust_dir
+    F_thrust_left = u_left.unsqueeze(1) * thrust_dir * in_contact[mask_left].mean()  # F_l = u_l * thrust_dir
+    F_thrust_right = u_right.unsqueeze(1) * thrust_dir * in_contact[mask_right].mean()  # F_r = u_r * thrust_dir
     assert F_thrust_left.shape == (B, 3) == F_thrust_right.shape
     torque_left = torch.cross(x_left - x, F_thrust_left)  # M_l = (x_l - x) x F_l
     torque_right = torch.cross(x_right - x, F_thrust_right)  # M_r = (x_r - x) x F_r
@@ -344,7 +321,7 @@ def forward_kinematics(x, xd, R, omega, x_points, xd_points,
 
     # motion of the cog
     F_grav = torch.tensor([[0.0, 0.0, -m * g]], device=x.device)  # F_grav = [0, 0, -m * g]
-    F_cog = F_grav + F_spring.sum(dim=1) + F_friction.sum(dim=1) + F_thrust_left + F_thrust_right  # ma = sum(F_i)
+    F_cog = F_grav + F_spring.mean(dim=1) + F_friction.mean(dim=1) + F_thrust_left + F_thrust_right  # ma = sum(F_i)
     xdd = F_cog / m  # a = F / m
     assert xdd.shape == (B, 3)
 
@@ -481,24 +458,24 @@ def motion():
     T = 5.0
 
     # control inputs in Newtons
-    controls = torch.stack([torch.tensor([[110.0, 110.0]] * int(T / dt)), torch.tensor([[-90.0, -100.0]] * int(T / dt))])
+    controls = torch.stack([torch.tensor([[110.0, 110.0]] * int(T / dt))])
 
     # rigid body parameters
-    x_points, m, I, mask_left, mask_right = rigid_body_params()
+    x_points, m, I, mask_left, mask_right = rigid_body_params(from_mesh=False)
 
     # initial state
-    x = torch.tensor([[-2.0, 0.0, 1.0], [4.0, 0.0, 1.0]])
-    xd = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    x = torch.tensor([[-2.0, 0.0, 1.0]])
+    xd = torch.tensor([[0.0, 0.0, 0.0]])
     R = torch.eye(3).repeat(x.shape[0], 1, 1)
     # R = torch.tensor(Rotation.from_euler('z', [0.0, np.pi/4]).as_matrix(), dtype=torch.float32)
-    omega = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    omega = torch.tensor([[0.0, 0.0, 0.0]])
     x_points = x_points @ R.transpose(1, 2) + x.unsqueeze(1)
     xd_points = torch.zeros_like(x_points)
     mask_left = mask_left.repeat(x.shape[0], 1)
     mask_right = mask_right.repeat(x.shape[0], 1)
 
     # heightmap defining the terrain
-    x_grid, y_grid, z_grid = heightmap(d_max, grid_res)
+    x_grid, y_grid, z_grid = heightmap(d_max, grid_res, mode='exp')
     # repeat the heightmap for each rigid body
     x_grid = x_grid.repeat(x.shape[0], 1, 1)
     y_grid = y_grid.repeat(x.shape[0], 1, 1)
@@ -706,7 +683,7 @@ def shoot_multiple():
     # simulation parameters
     dt = 0.01
     T = 5.0
-    num_trajs = 32
+    num_trajs = 128
     device = torch.device('cpu')
 
     def vw_to_track_vel(v, w, r=1.0):
@@ -734,16 +711,16 @@ def shoot_multiple():
     controls = torch.zeros((num_trajs, int(T / dt), 2))
     for i in range(num_trajs):
         controls[i, :, 0], controls[i, :, 1] = vw_to_track_vel(vels[i, :, 0], omegas[i, 2])
-    controls = 100 * torch.tensor(controls, dtype=torch.float32)
+    controls = 110 * torch.tensor(controls, dtype=torch.float32)
 
     # rigid body parameters
-    x_points, m, I, mask_left, mask_right = rigid_body_params()
+    x_points, m, I, mask_left, mask_right = rigid_body_params(from_mesh=False)
 
     # initial state
     x = torch.tensor([[-1.0, 0.0, 0.2]]).repeat(num_trajs, 1)
     xd = torch.zeros_like(x)
     R = torch.eye(3).repeat(x.shape[0], 1, 1)
-    # R = torch.tensor(Rotation.from_euler('z', -np.pi/6, degrees=False).as_matrix(), dtype=torch.float32).repeat(num_trajs, 1, 1)
+    # R = torch.tensor(Rotation.from_euler('z', -np.pi/6).as_matrix(), dtype=torch.float32).repeat(num_trajs, 1, 1)
     omega = torch.zeros_like(x)
     x_points = x_points @ R.transpose(1, 2) + x.unsqueeze(1)
     xd_points = torch.zeros_like(x_points)
@@ -751,7 +728,7 @@ def shoot_multiple():
     mask_right = mask_right.repeat(x.shape[0], 1)
 
     # heightmap defining the terrain
-    x_grid, y_grid, z_grid = heightmap(d_max, grid_res)
+    x_grid, y_grid, z_grid = heightmap(d_max, grid_res, mode='exp')
     # repeat the heightmap for each rigid body
     x_grid = x_grid.repeat(x.shape[0], 1, 1)
     y_grid = y_grid.repeat(x.shape[0], 1, 1)
