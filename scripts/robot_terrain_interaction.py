@@ -727,5 +727,103 @@ def motion():
                        vis_step=10)
 
 
+def shoot_multiple():
+    from time import time
+    from scipy.spatial.transform import Rotation
+    from monoforce.models.dphysics import vw_to_track_vel
+    from monoforce.vis import set_axes_equal
+    import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.use('Qt5Agg')
+
+    # simulation parameters
+    dphys_cfg = DPhysConfig()
+    device = torch.device('cpu')
+    dt = dphys_cfg.dt
+    T = dphys_cfg.traj_sim_time
+    num_trajs = dphys_cfg.n_sim_trajs
+    vel_max, omega_max = dphys_cfg.vel_max, dphys_cfg.omega_max
+
+    # rigid body parameters
+    x_points = torch.as_tensor(dphys_cfg.robot_points, device=device)
+
+    # initial state
+    x = torch.tensor([[0.0, 0.0, 0.2]], device=device).repeat(num_trajs, 1)
+    xd = torch.zeros_like(x)
+    R = torch.eye(3, device=device).repeat(x.shape[0], 1, 1)
+    # R = torch.tensor(Rotation.from_euler('z', np.pi/6).as_matrix(), dtype=torch.float32, device=device).repeat(num_trajs, 1, 1)
+    omega = torch.zeros_like(x)
+    x_points = x_points @ R.transpose(1, 2) + x.unsqueeze(1)
+
+    # terrain properties
+    x_grid = torch.arange(-dphys_cfg.d_max, dphys_cfg.d_max, dphys_cfg.grid_res).to(device)
+    y_grid = torch.arange(-dphys_cfg.d_max, dphys_cfg.d_max, dphys_cfg.grid_res).to(device)
+    x_grid, y_grid = torch.meshgrid(x_grid, y_grid)
+    z_grid = torch.exp(-(x_grid - 2) ** 2 / 4) * torch.exp(-(y_grid - 0) ** 2 / 2).to(device)
+
+    stiffness = dphys_cfg.k_stiffness * torch.ones_like(z_grid)
+    friction = dphys_cfg.k_friction * torch.ones_like(z_grid)
+    # repeat the heightmap for each rigid body
+    x_grid = x_grid.repeat(x.shape[0], 1, 1)
+    y_grid = y_grid.repeat(x.shape[0], 1, 1)
+    z_grid = z_grid.repeat(x.shape[0], 1, 1)
+    stiffness = stiffness.repeat(x.shape[0], 1, 1)
+    friction = friction.repeat(x.shape[0], 1, 1)
+
+    # control inputs in m/s and rad/s
+    assert num_trajs % 2 == 0, 'num_trajs must be even'
+    vels_x = torch.cat([-vel_max * torch.ones((num_trajs // 2, int(T / dt))),
+                        vel_max * torch.ones((num_trajs // 2, int(T / dt)))])
+    omegas_z = torch.cat([torch.linspace(-omega_max, omega_max, num_trajs // 2),
+                          torch.linspace(-omega_max, omega_max, num_trajs // 2)])
+    assert vels_x.shape == (num_trajs, int(T / dt))
+    assert omegas_z.shape == (num_trajs,)
+    vels = torch.zeros((num_trajs, int(T / dt), 3))
+    vels[:, :, 0] = vels_x
+    omegas = torch.zeros((num_trajs, 3))
+    omegas[:, 2] = omegas_z
+
+    controls = torch.zeros((num_trajs, int(T / dt), 2))
+    for i in range(num_trajs):
+        controls[i, :, 0], controls[i, :, 1] = vw_to_track_vel(vels[i, :, 0], omegas[i, 2])
+    controls = torch.as_tensor(controls, dtype=torch.float32, device=device)
+
+    # initial state
+    state0 = (x, xd, R, omega, x_points)
+
+    # put tensors to device
+    state0 = tuple([s.to(device) for s in state0])
+    z_grid = z_grid.to(device)
+    controls = controls.to(device)
+
+    # create the dphysics model
+    dphysics = DPhysics(dphys_cfg, device=device)
+
+    # simulate the rigid body dynamics
+    with torch.no_grad():
+        t0 = time()
+        states, forces = dphysics(z_grid=z_grid, controls=controls, state=state0)
+        t1 = time()
+        Xs, Xds, Rs, Omegas, X_points = states
+        print(Xs.shape)
+        print(f'Simulation took {(t1-t0):.3f} [sec] on device: {device}')
+
+    # visualize
+    with torch.no_grad():
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        # plot heightmap
+        ax.plot_surface(x_grid[0].cpu().numpy(), y_grid[0].cpu().numpy(), z_grid[0].cpu().numpy(), alpha=0.6, cmap='terrain')
+        set_axes_equal(ax)
+        for i in range(num_trajs):
+            ax.plot(Xs[i, :, 0].cpu(), Xs[i, :, 1].cpu(), Xs[i, :, 2].cpu(), c='b')
+        ax.set_title(f'Simulation of {num_trajs} trajs (T={T} [sec] long) took {(t1-t0):.3f} [sec] on device: {device}')
+        ax.set_xlabel('X [m]')
+        ax.set_ylabel('Y [m]')
+        ax.set_zlabel('Z [m]')
+        plt.show()
+
+
 if __name__ == '__main__':
     motion()
+    # shoot_multiple()
